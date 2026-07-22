@@ -7,7 +7,7 @@ enforced in the data layer — not just hidden in the UI.
 ## Stack
 
 - **Next.js 14** (App Router, Route Handlers, Edge middleware)
-- **Prisma** + SQLite for local dev (swap one env var for Postgres in prod)
+- **Prisma** + **Postgres** (developed and deployed against [Neon](https://neon.tech); any Postgres works)
 - **JWT sessions** via `jose` (Edge-runtime compatible, httpOnly cookie)
 - **Tailwind CSS**, no component library
 - **Zod** for input validation on every mutating route
@@ -18,29 +18,63 @@ size would fight you more than it'd help for a project this shape.
 
 ## Getting started
 
+1. Create a free Postgres database (e.g. [Neon](https://neon.tech) or
+   [Supabase](https://supabase.com)) and copy its connection string.
+
+2. Install and configure:
+
 ```bash
 npm install
-cp .env.example .env        # then set JWT_SECRET — see below
+cp .env.example .env
+```
+
+Edit `.env`:
+
+```
+DATABASE_URL="postgresql://user:password@host/db?sslmode=require"
+JWT_SECRET="<generate one below>"
+NEXT_PUBLIC_APP_URL="http://localhost:3000"
+```
+
+Generate a real `JWT_SECRET` (PowerShell doesn't have `openssl` by default —
+use whichever of these you have):
+
+```bash
+openssl rand -base64 32
+# or, if you don't have openssl (e.g. Windows PowerShell):
+node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"
+```
+
+3. Create the schema and seed data:
+
+```bash
 npx prisma migrate dev --name init
 npm run db:seed             # creates owner@acme.test / password123
 npm run dev
 ```
 
-Generate a real secret instead of the placeholder:
-
-```bash
-openssl rand -base64 32
-```
-
 Visit `http://localhost:3000`, sign in with the seeded account, or
 register a fresh one and create your own workspace.
 
-> This scaffold was built in a sandboxed environment without access to
-> Prisma's binary CDN, so `prisma generate` / `next build` could not be
-> executed end-to-end here. `npm install` was verified, and every schema
-> field, Prisma relation name, and route param was manually cross-checked
-> against its usage. Run the commands above locally — they're standard
-> Prisma/Next.js commands with nothing unusual in this setup.
+## Deploying (Vercel + Neon)
+
+1. Push the repo to GitHub and import it in Vercel.
+2. In Vercel → Settings → Environment Variables, set `DATABASE_URL`,
+   `JWT_SECRET`, and `NEXT_PUBLIC_APP_URL` (your production domain, e.g.
+   `https://your-app.vercel.app`) — same values as your local `.env`,
+   pointed at your real database and domain.
+3. Redeploy. Migrations aren't run automatically on deploy; run
+   `npx prisma migrate deploy` against the production `DATABASE_URL`
+   whenever the schema changes (locally, with `.env` pointed at prod, or
+   as a one-off Vercel build step).
+
+A SQLite datasource was considered for zero-config local dev, but two
+things ruled it out: Prisma's SQLite connector doesn't support native
+`enum` types (see the RBAC section below), and — more importantly —
+Vercel's serverless functions don't have a persistent filesystem, so a
+file-based DB wouldn't survive between requests in production anyway.
+Postgres from the start avoids both problems and matches what you'd
+actually ship.
 
 ## How tenancy actually works
 
@@ -85,6 +119,16 @@ checks across the codebase. UI uses it to hide actions; API routes use
 `assertPermission` to enforce them regardless of what the UI shows —
 the team page re-checks server-side even though the sidebar already
 hides the link for members.
+
+`Role` and `InviteStatus` are plain `String` columns in the schema
+(`src/lib/types.ts` is the source of truth for the valid values), not
+Prisma `enum` blocks — enum support varies by connector and this schema
+started on SQLite, where enums aren't supported at all. Every value
+written to these columns still goes through a zod-validated route, so
+this costs nothing in practice. Since the project now runs on Postgres,
+which does support native enums, promoting them back to real `enum`
+blocks for DB-level constraints is a reasonable follow-up — it's not
+required for correctness today.
 
 Edge cases handled on purpose:
 
@@ -136,6 +180,7 @@ src/lib/auth.ts                password hashing, JWT sign/verify (edge-safe)
 src/lib/session.ts             cookie-backed session, Node-only
 src/lib/org.ts                 tenant resolution — requireMembership()
 src/lib/rbac.ts                permission matrix
+src/lib/types.ts               Role / InviteStatus — the app-level source of truth
 src/middleware.ts              edge auth gate
 src/app/org/[orgSlug]/...      tenant-scoped pages
 src/app/api/org/[orgSlug]/...  tenant-scoped API routes
