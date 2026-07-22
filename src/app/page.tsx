@@ -7,5 +7,6 @@ export default async function RootPage() {
   if (!user) redirect("/login");
 
   const orgs = await listUserOrganizations(user);
-  redirect(orgs.length > 0 ? `/org/${orgs[0].slug}/dashboard` : "/org/new");
+  const firstOrg = orgs[0];
+  redirect(firstOrg ? `/org/${firstOrg.slug}/dashboard` : "/org/new");
 }
