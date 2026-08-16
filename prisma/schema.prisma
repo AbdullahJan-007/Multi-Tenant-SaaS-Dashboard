@@ -1,0 +1,96 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  // Postgres (Neon in production). SQLite was tried first for zero-config
+  // local dev, but has two problems: no native enum support (see the note
+  // below), and no persistent filesystem on Vercel's serverless functions,
+  // so a file-based DB wouldn't survive between requests in production anyway.
+  // NOTE: SQLite has no native enum support, so Role/InviteStatus are plain
+  // Strings here, constrained at the app layer (see src/lib/types.ts and the
+  // zod schemas on every mutating route). Moving to Postgres later, you can
+  // optionally promote these back to real `enum` blocks if you want DB-level
+  // constraints too — nothing else in the app needs to change to do that.
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id           String   @id @default(cuid())
+  email        String   @unique
+  passwordHash String
+  name         String
+  createdAt    DateTime @default(now())
+
+  memberships    Membership[]
+  sentInvites    Invite[]      @relation("InviteSender")
+  createdProjects Project[]    @relation("ProjectCreator")
+}
+
+// The tenant. Every piece of tenant-owned data hangs off an Organization,
+// directly or via a scoped foreign key — never off the User.
+model Organization {
+  id        String   @id @default(cuid())
+  name      String
+  slug      String   @unique
+  createdAt DateTime @default(now())
+
+  memberships Membership[]
+  invites     Invite[]
+  projects    Project[]
+}
+
+// The join table that makes multi-tenancy work: a user's role is scoped
+// to a single organization, not global. A user can belong to many orgs.
+model Membership {
+  id             String   @id @default(cuid())
+  role           String   @default("MEMBER")
+  createdAt      DateTime @default(now())
+
+  userId         String
+  user           User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, organizationId])
+  @@index([organizationId])
+}
+
+model Invite {
+  id             String       @id @default(cuid())
+  email          String
+  role           String       @default("MEMBER")
+  token          String       @unique
+  status         String       @default("PENDING")
+  expiresAt      DateTime
+  createdAt      DateTime     @default(now())
+
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  invitedById    String
+  invitedBy      User         @relation("InviteSender", fields: [invitedById], references: [id])
+
+  @@index([organizationId])
+  @@index([email])
+}
+
+// Stand-in for "real" tenant data. Every query against Project must be
+// scoped by organizationId — see src/lib/org.ts. This is the pattern
+// every future domain model in the app should follow.
+model Project {
+  id             String   @id @default(cuid())
+  name           String
+  description    String
+  createdAt      DateTime @default(now())
+
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  createdById    String
+  createdBy      User     @relation("ProjectCreator", fields: [createdById], references: [id])
+
+  @@index([organizationId])
+}
